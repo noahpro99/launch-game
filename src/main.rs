@@ -16,7 +16,16 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<EndTurn>()
-        .add_systems(Startup, startup)
+        .add_systems(
+            Startup,
+            (
+                spawn_camera,
+                spawn_boards,
+                spawn_cannon,
+                spawn_players,
+                spawn_background,
+            ),
+        )
         .add_systems(Update, bevy::window::close_on_esc)
         .add_systems(
             FixedUpdate,
@@ -32,7 +41,7 @@ fn main() {
         .run();
 }
 
-fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera2dBundle {
             transform: Transform {
@@ -43,9 +52,16 @@ fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         MainCamera,
     ));
+}
 
+fn spawn_players(mut commands: Commands) {
+    commands.spawn(Player { player_number: 1 });
+    commands.spawn(Player { player_number: 2 });
+    commands.spawn(Turn { player_number: 1 });
+}
+
+fn spawn_background(mut commands: Commands, asset_server: Res<AssetServer>) {
     let background_texture = asset_server.load("sky.png");
-
     commands.spawn(SpriteBundle {
         texture: background_texture,
         transform: Transform {
@@ -58,11 +74,9 @@ fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         ..default()
     });
-    commands.spawn(Player { player_number: 1 });
-    commands.spawn(Player { player_number: 2 });
-    commands.spawn(Turn { player_number: 1 });
+}
 
-    // boards
+fn spawn_boards(mut commands: Commands, asset_server: Res<AssetServer>) {
     let board_texture = asset_server.load("board.png");
     for player in 0..2 {
         for x in 0..BOARD_ROWS {
@@ -96,13 +110,20 @@ fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
             }
         }
     }
+}
 
-    // cannon
+fn spawn_cannon(mut commands: Commands, asset_server: Res<AssetServer>) {
     let cannon_texture = asset_server.load("cannon.png");
     commands.spawn((
         SpriteBundle {
             transform: Transform {
-                translation: Vec3::new(0.0, -BACKGROUND_SIZE.y / 2.0 + CANNON_SIZE.y / 2.0 + BOARD_ROWS as f32 * BOARD_SIZE.y, 0.0),
+                translation: Vec3::new(
+                    0.0,
+                    -BACKGROUND_SIZE.y / 2.0
+                        + CANNON_SIZE.y / 2.0
+                        + BOARD_ROWS as f32 * BOARD_SIZE.y,
+                    0.0,
+                ),
                 ..default()
             },
             texture: cannon_texture,
@@ -171,7 +192,7 @@ fn apply_velocity(mut query: Query<(&Velocity, &mut Transform)>) {
 
 fn fire_selected_cannon(
     mut commands: Commands,
-    mut cannon_query: Query<(&Cannon, &Transform)>,
+    mut cannon_query: Query<(&mut Cannon, &Transform)>,
     windows: Query<&Window>,
     click: Res<Input<MouseButton>>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -186,13 +207,14 @@ fn fire_selected_cannon(
         .cursor_position()
         .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor))
     {
-        for (cannon, transform) in cannon_query.iter_mut() {
+        for (mut cannon, transform) in cannon_query.iter_mut() {
             if cannon.is_selected {
                 let cannon_position = transform.translation.truncate();
                 let direction = world_position - cannon_position;
                 let power = (direction.length() / 100.0).min(1.0).max(0.1);
                 // max it using min
-                let velocity = - direction.normalize() * CANNONBALL_VELOCITY * power;
+                let velocity = -direction.normalize() * CANNONBALL_VELOCITY * power;
+                cannon.is_selected = false;
                 commands.spawn((
                     SpriteBundle {
                         transform: Transform {
@@ -221,6 +243,7 @@ fn select_cannon(
     windows: Query<&Window>,
     click: Res<Input<MouseButton>>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    turn: Query<&Turn>,
 ) {
     if !click.just_pressed(MouseButton::Left) {
         return;
@@ -242,11 +265,13 @@ fn select_cannon(
                 CANNON_SIZE,
             );
             if let Some(_) = collision {
-                cannon.is_selected = true;
+                if cannon.player_number == turn.single().player_number {
+                    cannon.is_selected = true;
+                }
+                println!("Cannon selected: {}", cannon.is_selected);
             } else {
                 cannon.is_selected = false;
             }
-            println!("Cannon selected: {}", cannon.is_selected);
         }
     }
 }
