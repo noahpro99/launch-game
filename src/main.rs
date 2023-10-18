@@ -1,12 +1,17 @@
-use bevy::{prelude::*, sprite::collide_aabb::collide};
+use bevy::{prelude::*, sprite::collide_aabb::collide, math::I64Vec2};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
-const BACKGROUND_SIZE: Vec2 = Vec2::new(400.0, 700.0);
+const BACKGROUND_SIZE: Vec2 = Vec2::new(400.0, 800.0);
 const BACKGROUND_STARTING_POSITION: Vec3 = Vec3::new(0.0, 0.0, -10.0);
-const BOARD_SIZE: Vec2 = Vec2::new(40.0, 10.0);
 
-const BOARD_ROWS: u8 = 10;
-const BOARD_COLS: u8 = 8;
+const INITIAL_BLOCKS_HEIGHT: i32 = 5;
+
+const GRID_SIZE: Vec2 = Vec2::new(20.0, 20.0);
+const GRID_X: i32 = (BACKGROUND_SIZE.x / GRID_SIZE.x) as i32;
+const GRID_Y: i32 = (BACKGROUND_SIZE.y / GRID_SIZE.y) as i32;
+
+const DIRT_HEALTH: u8 = 1;
+const GRASS_HEALTH: u8 = 2;
 
 const CANNON_SIZE: Vec2 = Vec2::new(40.0, 40.0);
 const CANNONBALL_VELOCITY: f32 = 10.0;
@@ -33,7 +38,7 @@ fn main() {
             Startup,
             (
                 spawn_camera,
-                spawn_boards,
+                spawn_initial_blocks,
                 spawn_players,
                 spawn_background,
                 spawn_ui,
@@ -46,7 +51,7 @@ fn main() {
                 turn_done,
                 change_turn,
                 apply_velocity,
-                cannonball_break_stuff,
+                // cannonball_break_stuff,
                 select_cannon,
                 fire_selected_cannon,
                 money_indicator,
@@ -184,22 +189,77 @@ fn spawn_background(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 }
 
-fn spawn_board(
+// fn spawn_board(
+//     commands: &mut Commands,
+//     asset_server: &Res<AssetServer>,
+//     position: Vec2,
+//     player_num: u8,
+// ) {
+//     let board_texture = asset_server.load("board.png");
+//     commands.spawn((
+//         SpriteBundle {
+//             transform: Transform {
+//                 translation: position.extend(0.0),
+//                 ..default()
+//             },
+//             texture: board_texture.clone(),
+//             sprite: Sprite {
+//                 custom_size: Some(BOARD_SIZE),
+//                 ..default()
+//             },
+//             ..default()
+//         },
+//         Board {
+//             player_number: player_num,
+//         },
+//         Breakable {
+//             health: BOARD_HEALTH,
+//         },
+//         Grid {
+//             position: to_grid_coords(position),
+//         },
+//     ));
+// }
+
+enum SingleBlockType {
+    Dirt,
+    Grass,
+}
+
+impl SingleBlockType {
+    fn image(&self, asset_server: &Res<AssetServer>) -> Handle<Image> {
+        match self {
+            SingleBlockType::Dirt => asset_server.load("dirt.png"),
+            SingleBlockType::Grass => asset_server.load("dirt_grass.png"),
+        }
+    }
+
+    fn health(&self) -> u8 {
+        match self {
+            SingleBlockType::Dirt => DIRT_HEALTH,
+            SingleBlockType::Grass => GRASS_HEALTH,
+        }
+    }
+}
+
+fn spawn_block(
     commands: &mut Commands,
     asset_server: &Res<AssetServer>,
-    position: Vec2,
+    block_type: SingleBlockType,
+    grid_position: I64Vec2,
     player_num: u8,
 ) {
-    let board_texture = asset_server.load("board.png");
+    let block_texture = block_type.image(asset_server);
     commands.spawn((
         SpriteBundle {
             transform: Transform {
-                translation: position.extend(0.0),
+                translation: from_grid_coords(grid_position).extend(0.0),
                 ..default()
             },
-            texture: board_texture.clone(),
+            texture: block_texture.clone(),
             sprite: Sprite {
-                custom_size: Some(BOARD_SIZE),
+                custom_size: Some(GRID_SIZE),
+                flip_y: if player_num == 1 { false } else { true },
                 ..default()
             },
             ..default()
@@ -208,21 +268,36 @@ fn spawn_board(
             player_number: player_num,
         },
         Breakable {
-            health: BOARD_HEALTH,
+            health: block_type.health(),
+        },
+        Grid {
+            position: grid_position,
         },
     ));
 }
 
-fn spawn_boards(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn spawn_initial_blocks(mut commands: Commands, asset_server: Res<AssetServer>) {
     for player in 0..2 {
-        for x in 0..BOARD_ROWS {
-            for y in 0..BOARD_COLS {
-                let x = x as f32 * BOARD_SIZE.x - BACKGROUND_SIZE.x / 2.0 + BOARD_SIZE.x / 2.0;
-                let y = match player {
-                    0 => y as f32 * BOARD_SIZE.y - BACKGROUND_SIZE.y / 2.0 + BOARD_SIZE.y / 2.0,
-                    _ => y as f32 * -BOARD_SIZE.y + BACKGROUND_SIZE.y / 2.0 - BOARD_SIZE.y / 2.0,
+        for x in 0..GRID_X {
+            for y in 0..INITIAL_BLOCKS_HEIGHT {
+                let block_type = if y == INITIAL_BLOCKS_HEIGHT - 1 {
+                    SingleBlockType::Grass
+                } else {
+                    SingleBlockType::Dirt
                 };
-                spawn_board(&mut commands, &asset_server, Vec2::new(x, y), player + 1);
+
+                let y = if player == 0 {
+                    y
+                } else {
+                    GRID_Y - y - 1
+                };
+                spawn_block(
+                    &mut commands,
+                    &asset_server,
+                    block_type,
+                    I64Vec2::new(x as i64, y as i64),
+                    player + 1,
+                );
             }
         }
     }
@@ -254,6 +329,20 @@ fn spawn_cannon(
             is_selected: false,
         },
     ));
+}
+
+fn from_grid_coords(position: I64Vec2) -> Vec2 {
+    Vec2::new(
+        position.x as f32 * GRID_SIZE.x - BACKGROUND_SIZE.x / 2.0 + GRID_SIZE.x / 2.0,
+        position.y as f32 * GRID_SIZE.y - BACKGROUND_SIZE.y / 2.0 + GRID_SIZE.y / 2.0,
+    )
+}
+
+fn to_grid_coords(position: Vec2) -> I64Vec2 {
+    I64Vec2::new(
+        ((position.x + BACKGROUND_SIZE.x / 2.0) / GRID_SIZE.x).floor() as i64,
+        ((position.y + BACKGROUND_SIZE.y / 2.0) / GRID_SIZE.y).floor() as i64,
+    ) 
 }
 
 #[derive(Component)]
@@ -321,6 +410,11 @@ struct CannonBall {
 
 #[derive(Component)]
 struct MoneyIndicator;
+
+#[derive(Component)]
+struct Grid {
+    position: I64Vec2,
+}
 
 fn apply_velocity(mut query: Query<(&Velocity, &mut Transform)>) {
     query.for_each_mut(|(velocity, mut transform)| {
@@ -424,29 +518,29 @@ fn select_cannon(
     }
 }
 
-fn cannonball_break_stuff(
-    mut commands: Commands,
-    mut cannonball_query: Query<(Entity, &Transform), With<CannonBall>>,
-    mut breakable_query: Query<(Entity, &Transform, &mut Breakable)>,
-) {
-    for (cannonball_entity, cannonball_transform) in cannonball_query.iter_mut() {
-        for (breakable_entity, breakable_transform, mut breakable) in breakable_query.iter_mut() {
-            let collision = collide(
-                cannonball_transform.translation,
-                CANNONBALL_SIZE,
-                breakable_transform.translation,
-                BOARD_SIZE,
-            );
-            if let Some(_) = collision {
-                breakable.health -= 1;
-                commands.entity(cannonball_entity).despawn_recursive();
-                if breakable.health == 0 {
-                    commands.entity(breakable_entity).despawn_recursive();
-                }
-            }
-        }
-    }
-}
+// fn cannonball_break_stuff(
+//     mut commands: Commands,
+//     mut cannonball_query: Query<(Entity, &Transform), With<CannonBall>>,
+//     mut breakable_query: Query<(Entity, &Transform, &mut Breakable)>,
+// ) {
+//     for (cannonball_entity, cannonball_transform) in cannonball_query.iter_mut() {
+//         for (breakable_entity, breakable_transform, mut breakable) in breakable_query.iter_mut() {
+//             let collision = collide(
+//                 cannonball_transform.translation,
+//                 CANNONBALL_SIZE,
+//                 breakable_transform.translation,
+//                 BOARD_SIZE,
+//             );
+//             if let Some(_) = collision {
+//                 breakable.health -= 1;
+//                 commands.entity(cannonball_entity).despawn_recursive();
+//                 if breakable.health == 0 {
+//                     commands.entity(breakable_entity).despawn_recursive();
+//                 }
+//             }
+//         }
+//     }
+// }
 
 fn change_turn(
     mut commands: Commands,
@@ -709,12 +803,13 @@ fn place_purchase(
                 Purchasable::Cannon => {
                     spawn_cannon(commands, asset_server, player.player_number, world_position)
                 }
-                Purchasable::Board => spawn_board(
-                    &mut commands,
-                    &asset_server,
-                    world_position,
-                    player.player_number,
-                ),
+                // Purchasable::Board => spawn_board(
+                //     &mut commands,
+                //     &asset_server,
+                //     world_position,
+                //     player.player_number,
+                // ),
+                _ => {}
             }
             player.state = PlayerState::WaitingForAction;
         }
