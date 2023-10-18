@@ -12,13 +12,13 @@ const GRID_Y: i32 = (BACKGROUND_SIZE.y / GRID_SIZE.y) as i32;
 
 const DIRT_HEALTH: u8 = 1;
 const GRASS_HEALTH: u8 = 2;
+const BOARD_HEALTH: u8 = 3;
 
 const CANNON_SIZE: Vec2 = Vec2::new(40.0, 40.0);
 const CANNONBALL_VELOCITY: f32 = 10.0;
 const CANNONBALL_SIZE: Vec2 = Vec2::new(8.0, 8.0);
 const CANNONBALL_COST: u32 = 30;
 
-const BOARD_HEALTH: u8 = 3;
 
 const STARTING_MONEY: u32 = 100;
 const BOARD_COST: u32 = 50;
@@ -51,7 +51,7 @@ fn main() {
                 turn_done,
                 change_turn,
                 apply_velocity,
-                // cannonball_break_stuff,
+                cannonball_break_stuff,
                 select_cannon,
                 fire_selected_cannon,
                 money_indicator,
@@ -161,16 +161,16 @@ fn spawn_ui(mut commands: Commands) {
 
 fn spawn_players(mut commands: Commands) {
     commands.spawn(Player {
-        player_number: 1,
+        side: PlayerSide::Top,
         money: STARTING_MONEY,
         state: PlayerState::WaitingForAction,
     });
     commands.spawn(Player {
-        player_number: 2,
+        side: PlayerSide::Bottom,
         money: STARTING_MONEY,
         state: PlayerState::WaitingForTurn,
     });
-    commands.spawn(Turn { player_number: 1 });
+    commands.spawn(Turn { player_side: PlayerSide::Bottom });
 }
 
 fn spawn_background(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -189,41 +189,35 @@ fn spawn_background(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 }
 
-// fn spawn_board(
-//     commands: &mut Commands,
-//     asset_server: &Res<AssetServer>,
-//     position: Vec2,
-//     player_num: u8,
-// ) {
-//     let board_texture = asset_server.load("board.png");
-//     commands.spawn((
-//         SpriteBundle {
-//             transform: Transform {
-//                 translation: position.extend(0.0),
-//                 ..default()
-//             },
-//             texture: board_texture.clone(),
-//             sprite: Sprite {
-//                 custom_size: Some(BOARD_SIZE),
-//                 ..default()
-//             },
-//             ..default()
-//         },
-//         Board {
-//             player_number: player_num,
-//         },
-//         Breakable {
-//             health: BOARD_HEALTH,
-//         },
-//         Grid {
-//             position: to_grid_coords(position),
-//         },
-//     ));
-// }
-
 enum SingleBlockType {
     Dirt,
     Grass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlayerSide {
+    Top,
+    Bottom,
+}
+
+impl PlayerSide {
+    fn other(&self) -> PlayerSide {
+        match self {
+            PlayerSide::Top => PlayerSide::Bottom,
+            PlayerSide::Bottom => PlayerSide::Top,
+        }
+    }
+
+    fn flip_y(&self) -> bool {
+        match self {
+            PlayerSide::Top => true,
+            PlayerSide::Bottom => false,
+        }
+    }
+
+    fn iter() -> impl Iterator<Item = PlayerSide> {
+        [PlayerSide::Bottom, PlayerSide::Top].iter().copied()
+    }
 }
 
 impl SingleBlockType {
@@ -247,7 +241,7 @@ fn spawn_block(
     asset_server: &Res<AssetServer>,
     block_type: SingleBlockType,
     grid_position: I64Vec2,
-    player_num: u8,
+    player_side: PlayerSide,
 ) {
     let block_texture = block_type.image(asset_server);
     commands.spawn((
@@ -259,25 +253,25 @@ fn spawn_block(
             texture: block_texture.clone(),
             sprite: Sprite {
                 custom_size: Some(GRID_SIZE),
-                flip_y: if player_num == 1 { false } else { true },
+                flip_y: player_side.flip_y(),
                 ..default()
             },
             ..default()
         },
         Board {
-            player_number: player_num,
+            player_side: player_side,
         },
         Breakable {
             health: block_type.health(),
         },
         Grid {
-            position: grid_position,
+            positions: vec![grid_position],
         },
     ));
 }
 
 fn spawn_initial_blocks(mut commands: Commands, asset_server: Res<AssetServer>) {
-    for player in 0..2 {
+    for player_side in PlayerSide::iter() {
         for x in 0..GRID_X {
             for y in 0..INITIAL_BLOCKS_HEIGHT {
                 let block_type = if y == INITIAL_BLOCKS_HEIGHT - 1 {
@@ -286,17 +280,16 @@ fn spawn_initial_blocks(mut commands: Commands, asset_server: Res<AssetServer>) 
                     SingleBlockType::Dirt
                 };
 
-                let y = if player == 0 {
-                    y
-                } else {
-                    GRID_Y - y - 1
+                let y = match player_side {
+                    PlayerSide::Top => GRID_Y - y - 1,
+                    PlayerSide::Bottom => y,
                 };
                 spawn_block(
                     &mut commands,
                     &asset_server,
                     block_type,
                     I64Vec2::new(x as i64, y as i64),
-                    player + 1,
+                    player_side,
                 );
             }
         }
@@ -304,29 +297,39 @@ fn spawn_initial_blocks(mut commands: Commands, asset_server: Res<AssetServer>) 
 }
 
 fn spawn_cannon(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    player_num: u8,
-    position: Vec2,
+    commands: &mut Commands,
+    asset_server: &Res<AssetServer>,
+    player_side: PlayerSide,
+    grid_position: I64Vec2,
 ) {
     let cannon_texture = asset_server.load("cannon.png");
+    // takes up 2x2 grid spaces
+    let translation_lower_left = from_grid_coords(grid_position);
+    let translation = translation_lower_left + GRID_SIZE / 2.0;
+
     commands.spawn((
         SpriteBundle {
             transform: Transform {
-                translation: position.extend(0.0),
+                translation: translation.extend(0.0),
                 ..default()
             },
             texture: cannon_texture,
             sprite: Sprite {
                 custom_size: Some(CANNON_SIZE),
-                flip_y: if player_num == 1 { false } else { true },
+                flip_y: player_side.flip_y(),
                 ..default()
             },
             ..default()
         },
         Cannon {
-            player_number: player_num,
+            player_side,
             is_selected: false,
+        },
+        Grid {
+            positions: vec![grid_position, grid_position + I64Vec2::new(1, 0), grid_position + I64Vec2::new(0, 1), grid_position + I64Vec2::new(1, 1)],
+        },
+        Board {
+            player_side,
         },
     ));
 }
@@ -354,7 +357,7 @@ struct PurchaseButton {
 
 #[derive(Component)]
 struct Player {
-    player_number: u8,
+    side: PlayerSide,
     money: u32,
     state: PlayerState,
 }
@@ -369,7 +372,7 @@ enum PlayerState {
 
 #[derive(Component)]
 struct Turn {
-    player_number: u8,
+    player_side: PlayerSide,
 }
 
 #[derive(Event)]
@@ -377,7 +380,7 @@ struct EndTurn;
 
 #[derive(Component)]
 struct Board {
-    player_number: u8,
+    player_side: PlayerSide,
 }
 
 #[derive(Component)]
@@ -399,13 +402,13 @@ struct Menu;
 
 #[derive(Component)]
 struct Cannon {
-    player_number: u8,
+    player_side: PlayerSide,
     is_selected: bool,
 }
 
 #[derive(Component)]
 struct CannonBall {
-    player_number: u8,
+    player_side: PlayerSide,
 }
 
 #[derive(Component)]
@@ -413,7 +416,7 @@ struct MoneyIndicator;
 
 #[derive(Component)]
 struct Grid {
-    position: I64Vec2,
+    positions: Vec<I64Vec2>,
 }
 
 fn apply_velocity(mut query: Query<(&Velocity, &mut Transform)>) {
@@ -470,7 +473,7 @@ fn fire_selected_cannon(
                     },
                     Velocity(velocity),
                     CannonBall {
-                        player_number: cannon.player_number,
+                        player_side: cannon.player_side,
                     },
                     Collider,
                 ));
@@ -507,7 +510,7 @@ fn select_cannon(
                 CANNON_SIZE,
             );
             if let Some(_) = collision {
-                if cannon.player_number == turn.single().player_number {
+                if cannon.player_side == turn.single().player_side {
                     cannon.is_selected = true;
                 }
                 println!("Cannon selected: {}", cannon.is_selected);
@@ -518,29 +521,29 @@ fn select_cannon(
     }
 }
 
-// fn cannonball_break_stuff(
-//     mut commands: Commands,
-//     mut cannonball_query: Query<(Entity, &Transform), With<CannonBall>>,
-//     mut breakable_query: Query<(Entity, &Transform, &mut Breakable)>,
-// ) {
-//     for (cannonball_entity, cannonball_transform) in cannonball_query.iter_mut() {
-//         for (breakable_entity, breakable_transform, mut breakable) in breakable_query.iter_mut() {
-//             let collision = collide(
-//                 cannonball_transform.translation,
-//                 CANNONBALL_SIZE,
-//                 breakable_transform.translation,
-//                 BOARD_SIZE,
-//             );
-//             if let Some(_) = collision {
-//                 breakable.health -= 1;
-//                 commands.entity(cannonball_entity).despawn_recursive();
-//                 if breakable.health == 0 {
-//                     commands.entity(breakable_entity).despawn_recursive();
-//                 }
-//             }
-//         }
-//     }
-// }
+fn cannonball_break_stuff(
+    mut commands: Commands,
+    mut cannonball_query: Query<(Entity, &Transform), With<CannonBall>>,
+    mut breakable_query: Query<(Entity, &Transform, &Sprite, &mut Breakable)>,
+) {
+    for (cannonball_entity, cannonball_transform) in cannonball_query.iter_mut() {
+        for (breakable_entity, breakable_transform, sprite, mut breakable) in breakable_query.iter_mut() {
+            let collision = collide(
+                cannonball_transform.translation,
+                CANNONBALL_SIZE,
+                breakable_transform.translation,
+                breakable_transform.scale.truncate() * sprite.custom_size.unwrap(),
+            );
+            if let Some(_) = collision {
+                breakable.health -= 1;
+                commands.entity(cannonball_entity).despawn_recursive();
+                if breakable.health == 0 {
+                    commands.entity(breakable_entity).despawn_recursive();
+                }
+            }
+        }
+    }
+}
 
 fn change_turn(
     mut commands: Commands,
@@ -554,9 +557,9 @@ fn change_turn(
     let mut turn = turn_query.single_mut();
     let mut camera = camera_query.single_mut();
     events.iter().for_each(|_| {
-        turn.player_number = if turn.player_number == 1 { 2 } else { 1 };
+        turn.player_side = turn.player_side.other();
         for mut player in player_query.iter_mut() {
-            if player.player_number == turn.player_number {
+            if player.side == turn.player_side {
                 player.state = PlayerState::WaitingForAction;
                 player.money += 100;
             } else {
@@ -684,15 +687,12 @@ fn purchase(
     for (interaction, purchase) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
-                println!("player state: {:?}", player.state);
                 if player.money > purchase.item.cost() {
-                    player.money -= purchase.item.cost();
                     player.state = PlayerState::Placing {
                         item: purchase.item,
                     };
                     let menu = menu_query.single_mut();
                     commands.entity(menu).despawn_recursive();
-                    println!("player state: {:?}", player.state);
                 }
             }
             _ => {}
@@ -780,6 +780,7 @@ fn place_purchase(
     mouse: Res<Input<MouseButton>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    grid_query: Query<&Grid>,
     mut player_query: Query<&mut Player>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) {
@@ -801,7 +802,18 @@ fn place_purchase(
         if let PlayerState::Placing { item } = player.state {
             match item {
                 Purchasable::Cannon => {
-                    spawn_cannon(commands, asset_server, player.player_number, world_position)
+                    // check if there is enough space for a cannon which takes up 2x2 grid spaces
+                    let grid_position = to_grid_coords(world_position);
+                    if is_valid_place(&grid_query, grid_position, vec![2, 2], player.side) {
+                        spawn_cannon(
+                            &mut commands,
+                            &asset_server,
+                            player.side,
+                            grid_position,
+                        );
+                        player.money -= CANNON_COST;
+                        player.state = PlayerState::WaitingForAction;
+                    }
                 }
                 // Purchasable::Board => spawn_board(
                 //     &mut commands,
@@ -811,7 +823,43 @@ fn place_purchase(
                 // ),
                 _ => {}
             }
-            player.state = PlayerState::WaitingForAction;
         }
     }
+}
+
+
+/// loop and check there isn't anything else and also only on that players side
+fn is_valid_place(
+    grid_query: &Query<&Grid>,
+    grid_position: I64Vec2,
+    size: Vec<u8>,
+    player_side: PlayerSide,
+) -> bool {
+    let mut valid = true;
+    for x in 0..size[0] {
+        for y in 0..size[1] {
+            let position = grid_position + I64Vec2::new(x as i64, y as i64);
+            let grid = grid_query
+                .iter()
+                .find(|grid| grid.positions.contains(&position));
+            if grid.is_some() {
+                valid = false;
+            }
+        }
+    }
+
+    // check if on the correct side
+    match player_side {
+        PlayerSide::Top => {
+            if grid_position.y < (GRID_Y / 2) as i64 {
+                valid = false;
+            }
+        }
+        PlayerSide::Bottom => {
+            if grid_position.y + size[1] as i64 > (GRID_Y / 2) as i64 {
+                valid = false;
+            }
+        }
+    }
+    valid
 }

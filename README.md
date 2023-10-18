@@ -7,8 +7,8 @@ The plan for this game is a two player game where each person takes turns aiming
 * Turn based
 * Cannon aiming, firing
 * Money system
-### To Do
 * Grid play area
+### To Do
 * Camera pan
 * Bomb explosion
 * Buy miners which produce money per turn
