@@ -44,6 +44,7 @@ fn main() {
                 spawn_initial_blocks,
                 spawn_players,
                 spawn_background,
+                spawn_ui,
             ),
         )
         .add_systems(
@@ -98,6 +99,108 @@ fn spawn_background(mut commands: Commands, asset_server: Res<AssetServer>) {
             ..default()
         },
     ));
+}
+
+fn spawn_ui(mut commands: Commands) {
+    // ── "Next turn: D" in top-right ─────────────────────────────────────────────
+    commands.spawn((
+        // absolute positioning is on the Node component
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(15.0),
+            right: Val::Px(15.0),
+            ..default()
+        },
+        // the text itself
+        Text::new("Next turn: D"),
+        // use the default font, just set size
+        TextFont {
+            font_size: 20.0,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        // optional: center justification inside its box
+        // TextLayout::new_with_justify(JustifyText::Center),
+    ));
+
+    // ── Money indicator (two spans) ─────────────────────────────────────────────
+    let money_root = commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(30.0),
+                right: Val::Px(15.0),
+                ..default()
+            },
+            // root text entity (spans are children)
+            Text::default(),
+            TextLayout::new_with_justify(JustifyText::Center),
+            MoneyIndicator, // attach your marker here
+        ))
+        .id();
+
+    // spans: "Money: " and "100"
+    commands.entity(money_root).with_children(|parent| {
+        parent.spawn((
+            TextSpan::new("Money: "),
+            TextFont {
+                font_size: 20.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+        ));
+        parent.spawn((
+            TextSpan::new("100"),
+            TextFont {
+                font_size: 20.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+        ));
+    });
+
+    // ── Purchase button under the money indicator ───────────────────────────────
+    commands
+        .spawn((
+            // container to place the button
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(60.0),
+                right: Val::Px(15.0),
+                width: Val::Px(150.0),
+                ..default()
+            },
+        ))
+        .with_children(|parent| {
+            parent
+                .spawn((
+                    Button, // marker that makes this entity a button
+                    // size/border and centering for the inner text
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(65.0),
+                        border: UiRect::all(Val::Px(5.0)),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    BorderColor(Color::BLACK),
+                    BorderRadius::MAX,
+                    BackgroundColor(NORMAL_BUTTON),
+                    PurchaseMenuButton, // your marker
+                ))
+                .with_children(|p| {
+                    p.spawn((
+                        Text::new("Purchase"),
+                        TextFont {
+                            font_size: 20.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                        TextShadow::default(),
+                    ));
+                });
+        });
 }
 
 enum SingleBlockType {
