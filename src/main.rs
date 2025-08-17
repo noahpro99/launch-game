@@ -1,4 +1,4 @@
-use bevy::{prelude::*, sprite::collide_aabb::collide, math::I64Vec2};
+use bevy::{math::I64Vec2, prelude::*};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
 const BACKGROUND_SIZE: Vec2 = Vec2::new(400.0, 800.0);
@@ -19,14 +19,13 @@ const CANNONBALL_VELOCITY: f32 = 10.0;
 const CANNONBALL_SIZE: Vec2 = Vec2::new(8.0, 8.0);
 const CANNONBALL_COST: u32 = 30;
 
-
 const STARTING_MONEY: u32 = 100;
 const BOARD_COST: u32 = 50;
 const CANNON_COST: u32 = 100;
 
-const NORMAL_BUTTON: Color = Color::rgb(0.15, 0.15, 0.15);
-const HOVERED_BUTTON: Color = Color::rgb(0.25, 0.25, 0.25);
-const PRESSED_BUTTON: Color = Color::rgb(0.35, 0.75, 0.35);
+const NORMAL_BUTTON: Color = Color::srgb(0.15, 0.15, 0.15);
+const HOVERED_BUTTON: Color = Color::srgb(0.25, 0.25, 0.25);
+const PRESSED_BUTTON: Color = Color::srgb(0.35, 0.75, 0.35);
 
 fn main() {
     App::new()
@@ -41,10 +40,8 @@ fn main() {
                 spawn_initial_blocks,
                 spawn_players,
                 spawn_background,
-                spawn_ui,
             ),
         )
-        .add_systems(Update, bevy::window::close_on_esc)
         .add_systems(
             FixedUpdate,
             (
@@ -66,97 +63,7 @@ fn main() {
 }
 
 fn spawn_camera(mut commands: Commands) {
-    commands.spawn((Camera2dBundle::default(), MainCamera));
-}
-
-fn spawn_ui(mut commands: Commands) {
-    // spawn text that says that next turn is D
-    commands.spawn(
-        TextBundle::from_section(
-            "Next turn: D",
-            TextStyle {
-                font_size: 20.0,
-                ..default()
-            },
-        )
-        .with_text_alignment(TextAlignment::Center)
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(15.0),
-            right: Val::Px(15.0),
-            ..default()
-        }),
-    );
-
-    // money indicator for current player
-    commands.spawn((
-        TextBundle::from_sections([
-            TextSection {
-                value: "Money: ".to_string(),
-                style: TextStyle {
-                    font_size: 20.0,
-                    ..default()
-                },
-            },
-            TextSection {
-                value: "100".to_string(),
-                style: TextStyle {
-                    font_size: 20.0,
-                    ..default()
-                },
-            },
-        ])
-        .with_text_alignment(TextAlignment::Center)
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(30.0),
-            right: Val::Px(15.0),
-            ..default()
-        }),
-        MoneyIndicator,
-    ));
-
-    // purchase button
-    commands
-        .spawn(NodeBundle {
-            style: Style {
-                // below money indicator
-                position_type: PositionType::Absolute,
-                top: Val::Px(60.0),
-                right: Val::Px(15.0),
-                width: Val::Px(150.0),
-
-                ..default()
-            },
-            ..default()
-        })
-        .with_children(|parent| {
-            parent
-                .spawn((
-                    ButtonBundle {
-                        style: Style {
-                            width: Val::Percent(100.0),
-                            height: Val::Px(65.0),
-                            border: UiRect::all(Val::Px(5.0)),
-                            ..default()
-                        },
-                        border_color: BorderColor(Color::BLACK),
-                        background_color: NORMAL_BUTTON.into(),
-                        ..default()
-                    },
-                    PurchaseMenuButton,
-                ))
-                .with_children(|parent| {
-                    parent.spawn(TextBundle::from_section(
-                        "Purchase",
-                        TextStyle {
-                            font_size: 20.0,
-                            color: Color::rgb(0.9, 0.9, 0.9),
-                            ..default()
-                        },
-                    ));
-                });
-        });
+    commands.spawn((Camera2d, MainCamera));
 }
 
 fn spawn_players(mut commands: Commands) {
@@ -170,23 +77,23 @@ fn spawn_players(mut commands: Commands) {
         money: STARTING_MONEY,
         state: PlayerState::WaitingForTurn,
     });
-    commands.spawn(Turn { player_side: PlayerSide::Bottom });
+    commands.spawn(Turn {
+        player_side: PlayerSide::Bottom,
+    });
 }
 
 fn spawn_background(mut commands: Commands, asset_server: Res<AssetServer>) {
     let background_texture = asset_server.load("sky.png");
-    commands.spawn(SpriteBundle {
-        texture: background_texture,
-        transform: Transform {
+    commands.spawn((
+        Sprite {
+            image: background_texture,
+            ..default()
+        },
+        Transform {
             translation: BACKGROUND_STARTING_POSITION,
             ..default()
         },
-        sprite: Sprite {
-            custom_size: Some(BACKGROUND_SIZE),
-            ..default()
-        },
-        ..default()
-    });
+    ));
 }
 
 enum SingleBlockType {
@@ -245,22 +152,16 @@ fn spawn_block(
 ) {
     let block_texture = block_type.image(asset_server);
     commands.spawn((
-        SpriteBundle {
-            transform: Transform {
-                translation: from_grid_coords(grid_position).extend(0.0),
-                ..default()
-            },
-            texture: block_texture.clone(),
-            sprite: Sprite {
-                custom_size: Some(GRID_SIZE),
-                flip_y: player_side.flip_y(),
-                ..default()
-            },
+        Sprite {
+            image: block_texture,
+            flip_y: player_side.flip_y(),
+            custom_size: Some(GRID_SIZE),
             ..default()
         },
-        Board {
-            player_side: player_side,
-        },
+        Transform::from_translation(from_grid_coords(grid_position).extend(0.0)),
+        GlobalTransform::default(),
+        Visibility::default(),
+        Board { player_side },
         Breakable {
             health: block_type.health(),
         },
@@ -308,29 +209,28 @@ fn spawn_cannon(
     let translation = translation_lower_left + GRID_SIZE / 2.0;
 
     commands.spawn((
-        SpriteBundle {
-            transform: Transform {
-                translation: translation.extend(0.0),
-                ..default()
-            },
-            texture: cannon_texture,
-            sprite: Sprite {
-                custom_size: Some(CANNON_SIZE),
-                flip_y: player_side.flip_y(),
-                ..default()
-            },
+        Sprite {
+            image: cannon_texture,
+            flip_y: player_side.flip_y(),
+            custom_size: Some(CANNON_SIZE),
             ..default()
         },
+        Transform::from_translation(translation.extend(0.0)),
+        GlobalTransform::default(),
+        Visibility::default(),
         Cannon {
             player_side,
             is_selected: false,
         },
         Grid {
-            positions: vec![grid_position, grid_position + I64Vec2::new(1, 0), grid_position + I64Vec2::new(0, 1), grid_position + I64Vec2::new(1, 1)],
+            positions: vec![
+                grid_position,
+                grid_position + I64Vec2::new(1, 0),
+                grid_position + I64Vec2::new(0, 1),
+                grid_position + I64Vec2::new(1, 1),
+            ],
         },
-        Board {
-            player_side,
-        },
+        Board { player_side },
     ));
 }
 
@@ -345,7 +245,7 @@ fn to_grid_coords(position: Vec2) -> I64Vec2 {
     I64Vec2::new(
         ((position.x + BACKGROUND_SIZE.x / 2.0) / GRID_SIZE.x).floor() as i64,
         ((position.y + BACKGROUND_SIZE.y / 2.0) / GRID_SIZE.y).floor() as i64,
-    ) 
+    )
 }
 
 #[derive(Component)]
@@ -420,7 +320,7 @@ struct Grid {
 }
 
 fn apply_velocity(mut query: Query<(&Velocity, &mut Transform)>) {
-    query.for_each_mut(|(velocity, mut transform)| {
+    query.iter_mut().for_each(|(velocity, mut transform)| {
         transform.translation.x += velocity.0.x;
         transform.translation.y += velocity.0.y;
     });
@@ -429,16 +329,15 @@ fn apply_velocity(mut query: Query<(&Velocity, &mut Transform)>) {
 fn fire_selected_cannon(
     mut commands: Commands,
     mut cannon_query: Query<(&mut Cannon, &Transform)>,
-    windows: Query<&Window>,
-    touch: Res<Input<MouseButton>>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    window: Single<&Window>,
+    touch: Res<ButtonInput<MouseButton>>,
+    camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut player_query: Query<&mut Player>,
 ) {
     if !touch.just_released(MouseButton::Left) {
         return;
     }
-    let window = windows.single();
-    let (camera, camera_transform) = camera_q.single();
+    let (camera, camera_transform) = camera_q.into_inner();
     let mut player = player_query
         .iter_mut()
         .find(|p| p.state != PlayerState::WaitingForTurn)
@@ -446,7 +345,7 @@ fn fire_selected_cannon(
 
     if let Some(world_position) = window
         .cursor_position()
-        .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor))
+        .and_then(|cursor| Some(camera.viewport_to_world_2d(camera_transform, cursor)))
     {
         for (mut cannon, transform) in cannon_query.iter_mut() {
             if cannon.is_selected {
@@ -460,17 +359,13 @@ fn fire_selected_cannon(
                 let velocity = -direction.normalize() * CANNONBALL_VELOCITY * power;
                 cannon.is_selected = false;
                 commands.spawn((
-                    SpriteBundle {
-                        transform: Transform {
-                            translation: cannon_position.extend(0.0),
-                            ..default()
-                        },
-                        sprite: Sprite {
-                            custom_size: Some(CANNONBALL_SIZE),
-                            ..default()
-                        },
+                    Sprite {
+                        custom_size: Some(CANNONBALL_SIZE),
                         ..default()
                     },
+                    Transform::from_translation(cannon_position.extend(0.0)),
+                    GlobalTransform::default(),
+                    Visibility::default(),
                     Velocity(velocity),
                     CannonBall {
                         player_side: cannon.player_side,
@@ -527,7 +422,9 @@ fn cannonball_break_stuff(
     mut breakable_query: Query<(Entity, &Transform, &Sprite, &mut Breakable)>,
 ) {
     for (cannonball_entity, cannonball_transform) in cannonball_query.iter_mut() {
-        for (breakable_entity, breakable_transform, sprite, mut breakable) in breakable_query.iter_mut() {
+        for (breakable_entity, breakable_transform, sprite, mut breakable) in
+            breakable_query.iter_mut()
+        {
             let collision = collide(
                 cannonball_transform.translation,
                 CANNONBALL_SIZE,
@@ -777,7 +674,7 @@ fn open_close_purchase_menu_text(
 fn place_purchase(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mouse: Res<Input<MouseButton>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     grid_query: Query<&Grid>,
@@ -805,12 +702,7 @@ fn place_purchase(
                     // check if there is enough space for a cannon which takes up 2x2 grid spaces
                     let grid_position = to_grid_coords(world_position);
                     if is_valid_place(&grid_query, grid_position, vec![2, 2], player.side) {
-                        spawn_cannon(
-                            &mut commands,
-                            &asset_server,
-                            player.side,
-                            grid_position,
-                        );
+                        spawn_cannon(&mut commands, &asset_server, player.side, grid_position);
                         player.money -= CANNON_COST;
                         player.state = PlayerState::WaitingForAction;
                     }
@@ -826,7 +718,6 @@ fn place_purchase(
         }
     }
 }
-
 
 /// loop and check there isn't anything else and also only on that players side
 fn is_valid_place(
