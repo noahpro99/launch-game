@@ -1,4 +1,6 @@
+use bevy::math::bounding::{Aabb2d, IntersectsVolume};
 use bevy::{math::I64Vec2, prelude::*};
+use bevy_egui::EguiPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 
 const BACKGROUND_SIZE: Vec2 = Vec2::new(400.0, 800.0);
@@ -12,7 +14,6 @@ const GRID_Y: i32 = (BACKGROUND_SIZE.y / GRID_SIZE.y) as i32;
 
 const DIRT_HEALTH: u8 = 1;
 const GRASS_HEALTH: u8 = 2;
-const BOARD_HEALTH: u8 = 3;
 
 const CANNON_SIZE: Vec2 = Vec2::new(40.0, 40.0);
 const CANNONBALL_VELOCITY: f32 = 10.0;
@@ -27,10 +28,13 @@ const NORMAL_BUTTON: Color = Color::srgb(0.15, 0.15, 0.15);
 const HOVERED_BUTTON: Color = Color::srgb(0.25, 0.25, 0.25);
 const PRESSED_BUTTON: Color = Color::srgb(0.35, 0.75, 0.35);
 
+const TURN_INCOME: u32 = 100;
+
 fn main() {
     App::new()
         // set window size to background size
         .add_plugins(DefaultPlugins)
+        .add_plugins(EguiPlugin::default()) // ⬅ add this BEFORE the inspector
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<EndTurn>()
         .add_systems(
@@ -345,7 +349,7 @@ fn fire_selected_cannon(
 
     if let Some(world_position) = window
         .cursor_position()
-        .and_then(|cursor| Some(camera.viewport_to_world_2d(camera_transform, cursor)))
+        .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor).ok())
     {
         for (mut cannon, transform) in cannon_query.iter_mut() {
             if cannon.is_selected {
@@ -354,7 +358,7 @@ fn fire_selected_cannon(
                 }
                 let cannon_position = transform.translation.truncate();
                 let direction = world_position - cannon_position;
-                let power = (direction.length() / 100.0).min(1.0).max(0.1);
+                let power = (direction.length() / 100.0).clamp(0.1, 1.0);
                 // max it using min
                 let velocity = -direction.normalize() * CANNONBALL_VELOCITY * power;
                 cannon.is_selected = false;
@@ -380,62 +384,59 @@ fn fire_selected_cannon(
 
 fn select_cannon(
     mut cannon_query: Query<(&mut Cannon, &Transform)>,
-    windows: Query<&Window>,
-    click: Res<Input<MouseButton>>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    turn: Query<&Turn>,
+    window: Single<&Window>,
+    click: Res<ButtonInput<MouseButton>>,
+    camera_q: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    turn: Single<&Turn>,
 ) {
     if !click.just_pressed(MouseButton::Left) {
         return;
     }
-    let window = windows.single();
-    let (camera, camera_transform) = camera_q.single();
-
+    let (camera, camera_transform) = camera_q.into_inner();
     if let Some(world_position) = window
         .cursor_position()
-        .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor))
+        .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor).ok())
     {
+        let probe_half = Vec2::new(0.5, 0.5); // half-size of probe rectangle
+        let cannon_half = CANNON_SIZE / 2.0;
+
         for (mut cannon, transform) in cannon_query.iter_mut() {
-            // check for collision
-            let cannon_position = transform.translation.truncate();
-            let collision = collide(
-                world_position.extend(0.0),
-                Vec2::new(1.0, 1.0),
-                cannon_position.extend(0.0),
-                CANNON_SIZE,
-            );
-            if let Some(_) = collision {
-                if cannon.player_side == turn.single().player_side {
-                    cannon.is_selected = true;
-                }
-                println!("Cannon selected: {}", cannon.is_selected);
-            } else {
-                cannon.is_selected = false;
-            }
+            let cannon_center = transform.translation.truncate();
+            let collided = aabb_collision(world_position, probe_half, cannon_center, cannon_half);
+
+            cannon.is_selected = collided && (cannon.player_side == turn.player_side);
+            println!("Cannon selected: {}", cannon.is_selected);
         }
     }
 }
 
+fn aabb_collision(point: Vec2, half_size: Vec2, entity_center: Vec2, entity_half: Vec2) -> bool {
+    let a = Aabb2d::new(point, half_size);
+    let b = Aabb2d::new(entity_center, entity_half);
+    a.intersects(&b)
+}
+
 fn cannonball_break_stuff(
     mut commands: Commands,
-    mut cannonball_query: Query<(Entity, &Transform), With<CannonBall>>,
-    mut breakable_query: Query<(Entity, &Transform, &Sprite, &mut Breakable)>,
+    mut cannonball_q: Query<(Entity, &Transform), With<CannonBall>>,
+    mut breakable_q: Query<(Entity, &Transform, &Sprite, &mut Breakable)>,
 ) {
-    for (cannonball_entity, cannonball_transform) in cannonball_query.iter_mut() {
-        for (breakable_entity, breakable_transform, sprite, mut breakable) in
-            breakable_query.iter_mut()
-        {
-            let collision = collide(
-                cannonball_transform.translation,
-                CANNONBALL_SIZE,
-                breakable_transform.translation,
-                breakable_transform.scale.truncate() * sprite.custom_size.unwrap(),
-            );
-            if let Some(_) = collision {
+    for (cannonball_e, cannonball_tf) in cannonball_q.iter_mut() {
+        let ball_center = cannonball_tf.translation.truncate();
+        let ball_half = CANNONBALL_SIZE * 0.5; // CANNONBALL_SIZE is full size -> make half
+
+        for (breakable_e, breakable_tf, sprite, mut breakable) in breakable_q.iter_mut() {
+            // If you know custom_size is always set, keep unwrap().
+            // Otherwise consider `unwrap_or(Vec2::ZERO)` or similar.
+            let full_breakable_size = breakable_tf.scale.truncate() * sprite.custom_size.unwrap();
+            let breakable_center = breakable_tf.translation.truncate();
+            let breakable_half = full_breakable_size * 0.5;
+
+            if aabb_collision(ball_center, ball_half, breakable_center, breakable_half) {
                 breakable.health -= 1;
-                commands.entity(cannonball_entity).despawn_recursive();
+                commands.entity(cannonball_e).despawn();
                 if breakable.health == 0 {
-                    commands.entity(breakable_entity).despawn_recursive();
+                    commands.entity(breakable_e).despawn();
                 }
             }
         }
@@ -445,49 +446,56 @@ fn cannonball_break_stuff(
 fn change_turn(
     mut commands: Commands,
     mut events: EventReader<EndTurn>,
-    mut turn_query: Query<&mut Turn>,
-    mut player_query: Query<&mut Player>,
-    mut camera_query: Query<&mut Transform, With<MainCamera>>,
-    mut cannon_query: Query<&mut Cannon>,
-    mut menu_query: Query<Entity, With<Menu>>,
+    mut turn: Single<&mut Turn>,
+    mut players: Query<&mut Player>,
+    mut camera: Single<&mut Transform, With<MainCamera>>,
+    mut cannons: Query<&mut Cannon>,
+    menus: Query<Entity, With<Menu>>,
 ) {
-    let mut turn = turn_query.single_mut();
-    let mut camera = camera_query.single_mut();
-    events.iter().for_each(|_| {
-        turn.player_side = turn.player_side.other();
-        for mut player in player_query.iter_mut() {
-            if player.side == turn.player_side {
-                player.state = PlayerState::WaitingForAction;
-                player.money += 100;
-            } else {
-                player.state = PlayerState::WaitingForTurn;
-            }
-        }
-        camera.rotate(Quat::from_rotation_z(std::f32::consts::PI));
-        for mut cannon in cannon_query.iter_mut() {
-            cannon.is_selected = false;
-        }
-        for menu in menu_query.iter_mut() {
-            commands.entity(menu).despawn_recursive();
-        }
-    });
-}
+    // Consume all EndTurn events this frame
+    let flips = events.read().count();
+    if flips % 2 == 0 {
+        // Even number of events cancels out; nothing to do.
+        return;
+    }
 
-fn money_indicator(
-    mut query: Query<&Player, Changed<Player>>,
-    mut money_indicator_query: Query<&mut Text, With<MoneyIndicator>>,
-) {
-    let mut money_indicator = money_indicator_query.single_mut();
-    for player in query.iter_mut() {
-        if player.state != PlayerState::WaitingForTurn {
-            money_indicator.sections[1].value = player.money.to_string();
+    // Flip turn once
+    turn.player_side = turn.player_side.other();
+
+    // Update players
+    for mut p in &mut players {
+        if p.side == turn.player_side {
+            p.state = PlayerState::WaitingForAction;
+            p.money += TURN_INCOME;
+        } else {
+            p.state = PlayerState::WaitingForTurn;
         }
+    }
+
+    // Rotate camera 180° (PI radians)
+    camera.rotate(Quat::from_rotation_z(std::f32::consts::PI));
+
+    // Clear selection
+    for mut cannon in &mut cannons {
+        cannon.is_selected = false;
+    }
+
+    // Close any open menus
+    for e in &menus {
+        commands.entity(e).despawn();
     }
 }
 
-fn turn_done(input: Res<Input<KeyCode>>, mut event_writer: EventWriter<EndTurn>) {
-    if input.just_pressed(KeyCode::D) {
-        event_writer.send(EndTurn);
+fn money_indicator(
+    player: Single<&Player, Changed<Player>>,
+    mut span_q: Single<&mut TextSpan, With<MoneyIndicator>>,
+) {
+    span_q.0 = player.money.to_string();
+}
+
+fn turn_done(input: Res<ButtonInput<KeyCode>>, mut event_writer: EventWriter<EndTurn>) {
+    if input.just_pressed(KeyCode::KeyD) {
+        event_writer.write(EndTurn);
     }
 }
 
@@ -520,19 +528,17 @@ impl ToString for Purchasable {
 }
 
 // show purchasing ui when a player state changes to purchasing which shows all the items that can be purchased
-fn spawn_purchase_ui(commands: &mut Commands) {
-    // spawn ui for purchasing
+fn spawn_purchase_ui(commands: &mut Commands, assets: &AssetServer) {
+    // Root panel (right side, below money indicator)
     commands
         .spawn((
-            NodeBundle {
-                style: Style {
-                    // put on right side below money indicator
-                    position_type: PositionType::Absolute,
-                    top: Val::Px(100.0),
-                    right: Val::Px(15.0),
-                    width: Val::Px(150.0),
-                    ..default()
-                },
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(100.0),
+                right: Val::Px(15.0),
+                width: Val::Px(150.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(8.0),
                 ..default()
             },
             Menu,
@@ -541,26 +547,30 @@ fn spawn_purchase_ui(commands: &mut Commands) {
             for purchasable in Purchasable::iter() {
                 parent
                     .spawn((
-                        ButtonBundle {
-                            style: Style {
-                                width: Val::Percent(100.0),
-                                border: UiRect::all(Val::Px(5.0)),
-                                ..default()
-                            },
-                            border_color: BorderColor(Color::BLACK),
-                            background_color: NORMAL_BUTTON.into(),
+                        Button,
+                        Node {
+                            width: Val::Percent(100.0),
+                            height: Val::Px(36.0),
+                            border: UiRect::all(Val::Px(5.0)),
+                            justify_content: JustifyContent::Center, // center the label
+                            align_items: AlignItems::Center,
                             ..default()
                         },
+                        BorderColor(Color::BLACK),
+                        BackgroundColor(NORMAL_BUTTON),
+                        BorderRadius::MAX, // optional: rounded corners
                         PurchaseButton { item: purchasable },
                     ))
-                    .with_children(|parent| {
-                        parent.spawn(TextBundle::from_section(
-                            purchasable.to_string(),
-                            TextStyle {
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new(purchasable.to_string()),
+                            TextFont {
+                                font: assets.load("fonts/FiraSans-Bold.ttf"),
                                 font_size: 20.0,
-                                color: Color::rgb(0.9, 0.9, 0.9),
                                 ..default()
                             },
+                            TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                            TextShadow::default(),
                         ));
                     });
             }
@@ -569,31 +579,24 @@ fn spawn_purchase_ui(commands: &mut Commands) {
 
 fn purchase(
     mut commands: Commands,
-    mut interaction_query: Query<
-        (&Interaction, &PurchaseButton),
-        (Changed<Interaction>, With<Button>),
-    >,
-    mut player_query: Query<&mut Player>,
-    mut menu_query: Query<Entity, With<Menu>>,
+    interactions: Query<(&Interaction, &PurchaseButton), (Changed<Interaction>, With<Button>)>,
+    mut players: Query<&mut Player>,
+    menu: Single<Entity, With<Menu>>,
 ) {
-    let mut player = player_query
+    // Find the non-waiting player (active side). Bail if none.
+    let Some(mut player) = players
         .iter_mut()
         .find(|p| p.state != PlayerState::WaitingForTurn)
-        .unwrap();
+    else {
+        return;
+    };
 
-    for (interaction, purchase) in &mut interaction_query {
-        match *interaction {
-            Interaction::Pressed => {
-                if player.money > purchase.item.cost() {
-                    player.state = PlayerState::Placing {
-                        item: purchase.item,
-                    };
-                    let menu = menu_query.single_mut();
-                    commands.entity(menu).despawn_recursive();
-                }
-            }
-            _ => {}
-        }
+    // Find the first button that was pressed AND is affordable; grab the item.
+    if let Some(item) = interactions.iter().find_map(|(i, p)| {
+        (*i == Interaction::Pressed && player.money >= p.item.cost()).then_some(p.item)
+    }) {
+        player.state = PlayerState::Placing { item };
+        commands.entity(*menu).despawn();
     }
 }
 
@@ -606,13 +609,13 @@ fn button_color(
     for (interaction, mut bg_color) in &mut interaction_query {
         match *interaction {
             Interaction::Pressed => {
-                bg_color.0 = PRESSED_BUTTON.into();
+                bg_color.0 = PRESSED_BUTTON;
             }
             Interaction::Hovered => {
-                bg_color.0 = HOVERED_BUTTON.into();
+                bg_color.0 = HOVERED_BUTTON;
             }
             Interaction::None => {
-                bg_color.0 = NORMAL_BUTTON.into();
+                bg_color.0 = NORMAL_BUTTON;
             }
         }
     }
@@ -620,53 +623,80 @@ fn button_color(
 
 fn open_close_purchase_menu(
     mut commands: Commands,
-    mut interaction_query: Query<
+    interactions: Query<
         &Interaction,
         (Changed<Interaction>, With<Button>, With<PurchaseMenuButton>),
     >,
-    mut player_query: Query<&mut Player>,
-    mut menu_query: Query<Entity, With<Menu>>,
+    mut players: Query<&mut Player>,
+    menu: Single<Entity, With<Menu>>,
+    assets: Res<AssetServer>, // pass through to your spawner
 ) {
-    let mut player = player_query
+    // Only act if at least one relevant button was *pressed* this frame.
+    let pressed = interactions.iter().any(|i| *i == Interaction::Pressed);
+    if !pressed {
+        return;
+    }
+
+    // Find the active player (not waiting for their turn).
+    let Some(mut player) = players
         .iter_mut()
         .find(|p| p.state != PlayerState::WaitingForTurn)
-        .unwrap();
+    else {
+        return;
+    };
 
-    for interaction in &mut interaction_query {
-        match *interaction {
-            Interaction::Pressed => match player.state {
-                PlayerState::WaitingForAction => {
-                    player.state = PlayerState::PurchaseMenu;
-                    spawn_purchase_ui(&mut commands);
-                }
-                PlayerState::PurchaseMenu => {
-                    player.state = PlayerState::WaitingForAction;
-                    let menu = menu_query.single_mut();
-                    commands.entity(menu).despawn_recursive();
-                }
-                _ => {}
-            },
-            _ => {}
+    match player.state {
+        PlayerState::WaitingForAction => {
+            player.state = PlayerState::PurchaseMenu;
+            // Your spawner signature likely: fn spawn_purchase_ui(commands: &mut Commands, assets: &AssetServer)
+            spawn_purchase_ui(&mut commands, &assets);
         }
+        PlayerState::PurchaseMenu => {
+            player.state = PlayerState::WaitingForAction;
+            commands.entity(menu.into_inner()).despawn();
+        }
+        _ => {}
     }
 }
 
 fn open_close_purchase_menu_text(
-    mut interaction_query: Query<&Children, (With<Button>, With<PurchaseMenuButton>)>,
-    mut player_query: Query<&Player>,
-    mut text_query: Query<&mut Text>,
+    buttons: Query<&Children, (With<Button>, With<PurchaseMenuButton>)>,
+    players: Query<&Player>,
+    children_q: Query<&Children>,
+    mut spans: Query<&mut TextSpan>,
 ) {
-    let player = player_query
-        .iter_mut()
+    // Find active player
+    let Some(player) = players
+        .iter()
         .find(|p| p.state != PlayerState::WaitingForTurn)
-        .unwrap();
+    else {
+        return;
+    };
 
-    for children in &mut interaction_query {
-        let mut text = text_query.get_mut(children[0]).unwrap();
-        text.sections[0].value = match player.state {
-            PlayerState::WaitingForAction => "Purchase".to_string(),
-            PlayerState::PurchaseMenu => "Cancel".to_string(),
-            _ => "Purchase".to_string(),
+    let label = match player.state {
+        PlayerState::WaitingForAction => "Purchase",
+        PlayerState::PurchaseMenu => "Cancel",
+        _ => "Purchase",
+    };
+
+    // Iterate Entities directly (no &)
+    for btn_children in &buttons {
+        for child in btn_children.iter() {
+            // child: Entity
+            if let Ok(text_children) = children_q.get(child) {
+                for span_ent in text_children.iter() {
+                    // span_ent: Entity
+                    if let Ok(mut span) = spans.get_mut(span_ent) {
+                        span.0 = label.to_string();
+                        return;
+                    }
+                }
+            }
+            // Fallback if a TextSpan is on the button entity itself
+            if let Ok(mut span) = spans.get_mut(child) {
+                span.0 = label.to_string();
+                return;
+            }
         }
     }
 }
@@ -675,8 +705,8 @@ fn place_purchase(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mouse: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
     grid_query: Query<&Grid>,
     mut player_query: Query<&mut Player>,
 ) {
@@ -689,31 +719,21 @@ fn place_purchase(
         .find(|p| p.state != PlayerState::WaitingForTurn)
         .unwrap();
 
-    let window = windows.single();
-    let (camera, camera_transform) = camera_q.single();
+    let (camera, camera_transform) = camera.into_inner();
 
     if let Some(world_position) = window
         .cursor_position()
-        .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor))
+        .and_then(|cursor| camera.viewport_to_world_2d(camera_transform, cursor).ok())
     {
         if let PlayerState::Placing { item } = player.state {
-            match item {
-                Purchasable::Cannon => {
-                    // check if there is enough space for a cannon which takes up 2x2 grid spaces
-                    let grid_position = to_grid_coords(world_position);
-                    if is_valid_place(&grid_query, grid_position, vec![2, 2], player.side) {
-                        spawn_cannon(&mut commands, &asset_server, player.side, grid_position);
-                        player.money -= CANNON_COST;
-                        player.state = PlayerState::WaitingForAction;
-                    }
+            if item == Purchasable::Cannon {
+                // check if there is enough space for a cannon which takes up 2x2 grid spaces
+                let grid_position = to_grid_coords(world_position);
+                if is_valid_place(&grid_query, grid_position, vec![2, 2], player.side) {
+                    spawn_cannon(&mut commands, &asset_server, player.side, grid_position);
+                    player.money -= CANNON_COST;
+                    player.state = PlayerState::WaitingForAction;
                 }
-                // Purchasable::Board => spawn_board(
-                //     &mut commands,
-                //     &asset_server,
-                //     world_position,
-                //     player.player_number,
-                // ),
-                _ => {}
             }
         }
     }
