@@ -1,7 +1,7 @@
 [package]
 name = "launch-game"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,5 +14,5 @@ opt-level = 1
 opt-level = 3
 
 [dependencies]
-bevy = { version = "0.11.3", features = ["dynamic_linking"] }
-bevy-inspector-egui = "0.20.0"
+bevy = { version = "0.16.1", features = ["wayland"] }
+bevy-inspector-egui = "0.33.1"
